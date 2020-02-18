@@ -1,15 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
-    <TargetFramework>netcoreapp2.1</TargetFramework>
+    <TargetFramework>netcoreapp3.1</TargetFramework>
     <AssemblyName>Microsoft.Azure.EventHubs.CaptureProcessor</AssemblyName>
     <RootNamespace>Microsoft.Azure.EventHubs.CaptureProcessor</RootNamespace>
   </PropertyGroup>
-
   <ItemGroup>
-    <PackageReference Include="Apache.Avro" Version="1.9.0-beta001" />
-    <PackageReference Include="Microsoft.Azure.EventHubs" Version="3.0.0" />
-    <PackageReference Include="Microsoft.Azure.EventHubs.Processor" Version="3.0.0" />
+    <PackageReference Include="Apache.Avro" Version="1.9.2" />
+    <PackageReference Include="Azure.Storage.Blobs" Version="12.3.0" />
+    <PackageReference Include="Microsoft.Azure.EventHubs" Version="4.1.0" />
+    <PackageReference Include="Microsoft.Azure.EventHubs.Processor" Version="4.1.0" />
   </ItemGroup>
-
 </Project>

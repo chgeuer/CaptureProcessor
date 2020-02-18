@@ -1,35 +1,71 @@
-﻿using System;
-
-namespace ConsoleAppTest
+﻿namespace ConsoleAppTest
 {
+    using System;
+    using System.Collections.Generic;
+    using System.IO;
+    using System.Text;
+    using System.Threading.Tasks;
+    using Microsoft.Azure.EventHubs;
     using Microsoft.Azure.EventHubs.CaptureProcessor;
-    class Program
+    using Microsoft.Azure.EventHubs.Processor;
+    using Newtonsoft.Json;
+
+    internal class Program
     {
-        static void Main(string[] args)
+        private static async Task Main()
         {
+            var credentialData = JsonConvert.DeserializeObject<dynamic>(
+                await File.ReadAllTextAsync(
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "creds.json")));
+            var projectConfig = credentialData.flightbooking;
 
-            //{Namespace}/{EventHub}/{PartitionId}/{Year}/{Month}/{Day}/{Hour}/{Minute}/{Second}
-            //"danskafkahub/mytopic/0/2018/06/03/11/45/48.avro"
-            /*
-            var processor = new CaptureProcessorHost("danskafkahub", "mytopic", 2,
-              """,
-              "tickercapture", "{Namespace}/{EventHub}/{PartitionId}/{Year}/{Month}/{Day}/{Hour}/{Minute}/{Second}");
-            processor.RegisterCaptureProcessorAsync<MyProcessor>();
-            */
+            var captureProcessorHost = new CaptureProcessorHost(
+                eventHubConnectionString: (string)projectConfig.sharedAccessConnectionStringRoot, // "Endpoint=sb://...servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=..."
+                namespaceName: (string)projectConfig.entityPath,
+                eventHubName: (string)projectConfig.eventHubName,
+                partitionCount: 1,
+                consumerGroup: "$Capture",
+                leaseContainerName: "leases",
+                captureStorageAccountConnectionString: (string)projectConfig.capture.storageConnectionString, // "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net"
+                captureContainerName: (string)projectConfig.capture.containerName,
+                captureFileNameFormat: "{Namespace}/{EventHub}/{PartitionId}/{Year}/{Month}/{Day}/{Hour}/{Minute}/{Second}",
+                startingAt: DateTime.Now.Subtract(TimeSpan.FromDays(100)));
 
+            await captureProcessorHost.RunCaptureProcessorAsync(() => new ConsoleWriterProcessor());
+        }
+    }
 
-            //Start here
-            //"danskafkahub/mytopic/0/2018/06/10/11/45/48.avro"
-            
-            DateTime startDate = new DateTime(2018, 06, 10, 11, 45, 48);
-            var processor = new CaptureProcessorHost("danskafkahub", "mytopic", 2, 
-                "",
-                "tickercapture", "{Namespace}/{EventHub}/{PartitionId}/{Year}/{Month}/{Day}/{Hour}/{Minute}/{Second}", startDate);
+    public class ConsoleWriterProcessor : IEventProcessor
+    {
+        public async Task OpenAsync(PartitionContext context)
+        {
+            await Console.Out.WriteLineAsync($"Open Partition {context.PartitionId}");
+        }
 
-                //"..\\..\\..\\", "*.avro");
-            processor.RegisterCaptureProcessorAsync<MyProcessor>();
-            
-            Console.ReadLine();
+        private static string FormatMessage(EventData m) => string.Join(" ", new[]
+            {
+                $"enqueuedTimeUtc={m.SystemProperties.EnqueuedTimeUtc}",
+                $"sequenceNumber={m.SystemProperties.SequenceNumber}",
+                $"offset=\"{m.SystemProperties.Offset}\"",
+                $"body=\"{m.Body.ToArray().ToUtf8String()}\""
+            });
+
+        public Task ProcessEventsAsync(PartitionContext context, IEnumerable<EventData> m) =>
+                m.ForeachAwaiting(msg => Console.Out.WriteLineAsync(FormatMessage(msg)));
+
+        public Task ProcessErrorAsync(PartitionContext context, Exception error) { return Task.CompletedTask; }
+        public Task CloseAsync(PartitionContext context, CloseReason reason) { return Task.CompletedTask; }
+    }
+
+    public static class MyExtensions
+    {
+        public static string ToUtf8String(this byte[] bytes) => Encoding.UTF8.GetString(bytes);
+        public static async Task ForeachAwaiting<T>(this IEnumerable<T> values, Func<T, Task> action)
+        {
+            foreach (var value in values)
+            {
+                await action(value);
+            }
         }
     }
 }
