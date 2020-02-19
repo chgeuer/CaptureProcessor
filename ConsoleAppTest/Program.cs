@@ -29,7 +29,7 @@
                 captureStorageAccountConnectionString: (string)projectConfig.capture.storageConnectionString, // "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net"
                 captureContainerName: (string)projectConfig.capture.containerName,
                 captureFileNameFormat: "{Namespace}/{EventHub}/{PartitionId}/{Year}/{Month}/{Day}/{Hour}/{Minute}/{Second}",
-                startingAt: DateTime.Now.Subtract(TimeSpan.FromDays(100)));
+                startingAt: DateTime.Now.Subtract(TimeSpan.FromDays(6)));
 
             await captureProcessorHost.RunCaptureProcessorAsync(() => new ConsoleWriterProcessor());
         }
@@ -44,7 +44,8 @@
 
         private static string FormatMessage(EventData m) => string.Join(" ", new[]
             {
-                $"enqueuedTimeUtc={m.SystemProperties.EnqueuedTimeUtc}",
+                "     ",
+                $"enqueuedTimeUtc={m.SystemProperties.EnqueuedTimeUtc.ToString("yyyy/MM/dd/HH/mm/ss")}",
                 $"sequenceNumber={m.SystemProperties.SequenceNumber}",
                 $"offset=\"{m.SystemProperties.Offset}\"",
                 $"body=\"{m.Body.ToArray().ToUtf8String()}\""

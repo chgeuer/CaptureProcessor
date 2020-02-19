@@ -137,6 +137,7 @@
             var captureContainerUri = captureContainer.Uri.ToString() + "/";
             string uriPrefix = captureContainerUri + startString;
             string listBlobPrefix = FormatStorageString(partitionContext);
+            OperationContext operationContext = null;
 
             BlobContinuationToken blobContinuationToken = null;
             do
@@ -145,13 +146,13 @@
                     prefix: listBlobPrefix,  useFlatBlobListing: true, 
                     blobListingDetails: BlobListingDetails.None, 
                     maxResults: null, currentToken: blobContinuationToken,
-                    options: new BlobRequestOptions(), operationContext: null, 
+                    options: new BlobRequestOptions(), operationContext: operationContext, 
                     cancellationToken: cancellationToken);
                 blobContinuationToken = blobResultSegment.ContinuationToken;
 
                 foreach (var listBlobItem in blobResultSegment.Results)
                 {
-                    if (useStartFile && string.Compare(uriPrefix, listBlobItem.Uri.ToString()) > 0)
+                    if (useStartFile && string.Compare(uriPrefix, listBlobItem.Uri.AbsoluteUri) > 0)
                     {
                         continue;
                     }
@@ -162,10 +163,10 @@
                     using Stream stream = await blob.OpenReadAsync(
                         accessCondition: null, 
                         options: new BlobRequestOptions(), 
-                        operationContext: null, 
+                        operationContext: operationContext, 
                         cancellationToken: cancellationToken);
 
-                    var eventHubMessages = stream.ReadAvroStreamToEventHubData(
+                    IEnumerable<EventData> eventHubMessages = stream.ReadAvroStreamToEventHubData(
                         partitionKey: this.partitionContext.PartitionId);
 
                     await eventProcessor.ProcessEventsAsync(
@@ -194,12 +195,17 @@
             }
         }
 
-        internal static bool GetValue<T>(this GenericRecord record, string fieldName, out T t)
+        private static T GetValue<T>(this GenericRecord record, string fieldName)
         {
-            var success = record.TryGetValue(fieldName, out object o);
-            t = success ? (T)o : default;
-            return success;
+            if (!record.TryGetValue(fieldName, out object result))
+            {
+                throw new ArgumentException($"Missing field {fieldName} in {nameof(GenericRecord)} object.");
+            }
+            return (T)result;
         }
+
+        private static DateTime ParseTime(this string s) => DateTime.ParseExact(s, format: "M/d/yyyy h:mm:ss tt",
+                    provider: CultureInfo.InvariantCulture, style: DateTimeStyles.AssumeUniversal);
 
         internal static IEnumerable<EventData> ReadAvroStreamToEventHubData(this Stream stream, string partitionKey)
         {
@@ -208,48 +214,17 @@
             {
                 GenericRecord genericAvroRecord = reader.Next();
 
-                if (!genericAvroRecord.GetValue<byte[]>(nameof(EventData.Body), out var body))
-                {
-                    continue;
-                }
+                var body = genericAvroRecord.GetValue<byte[]>(nameof(EventData.Body));
+                var sequenceNumber = genericAvroRecord.GetValue<long>(nameof(EventData.SystemProperties.SequenceNumber));
+                var enqueuedTimeUtc = genericAvroRecord.GetValue<string>(nameof(EventData.SystemProperties.EnqueuedTimeUtc)).ParseTime();
+                var offset = genericAvroRecord.GetValue<string>(nameof(EventData.SystemProperties.Offset));
 
-                if (!genericAvroRecord.GetValue<string>(nameof(EventData.SystemProperties.EnqueuedTimeUtc), out var enqueuedTimeUtcString))
-                {
-                    throw new ArgumentException($"Missing property {nameof(EventData.SystemProperties.EnqueuedTimeUtc)}");
-                }
-               
-                var enqueuedTimeUtc = DateTime.ParseExact(enqueuedTimeUtcString, format: "M/d/yyyy h:mm:ss tt", 
-                    provider: CultureInfo.InvariantCulture, style: DateTimeStyles.AssumeUniversal);
-
-                if (!genericAvroRecord.GetValue<long>(nameof(EventData.SystemProperties.SequenceNumber), out var sequenceNumber))
-                {
-                    throw new ArgumentException($"Missing property {nameof(EventData.SystemProperties.SequenceNumber)}");
-                }
-
-                if (!genericAvroRecord.GetValue<string>(nameof(EventData.SystemProperties.Offset), out var offset))
-                {
-                    throw new ArgumentException($"Missing property {nameof(EventData.SystemProperties.Offset)}");
-                }
-
-                var eventData = new EventData(body)
-                {
-                    SystemProperties = new EventData.SystemPropertiesCollection(
-                        sequenceNumber: sequenceNumber,
-                        enqueuedTimeUtc: enqueuedTimeUtc,
-                        offset: offset,
-                        partitionKey: partitionKey)
-                };
-
-                if (genericAvroRecord.TryGetValue(nameof(EventData.Properties), out object properties))
-                {
-                    (properties as Dictionary<string, object>).Foreach(eventData.Properties.Add);
-                }
-
-                if (genericAvroRecord.TryGetValue(nameof(EventData.SystemProperties), out object systemProperties))
-                {
-                    (systemProperties as Dictionary<string, object>).Foreach(x =>
-                        eventData.SystemProperties.Add(x.Key, x.Value));
-                }
+                var systemPropertiesCollection = new EventData.SystemPropertiesCollection(
+                        sequenceNumber: sequenceNumber, enqueuedTimeUtc: enqueuedTimeUtc,
+                        offset: offset, partitionKey: partitionKey);
+                genericAvroRecord
+                    .GetValue<Dictionary<string, object>>(nameof(EventData.SystemProperties))
+                    .Foreach(x => systemPropertiesCollection.Add(x.Key, x.Value));
 
                 IEnumerator<Field> avroSchemaField = genericAvroRecord.Schema.GetEnumerator();
                 while (avroSchemaField.MoveNext())
@@ -260,12 +235,21 @@
                     if (currentFieldName == nameof(EventData.Body)) continue;
                     if (currentFieldName == nameof(EventData.Properties)) continue;
                     if (currentFieldName == nameof(EventData.SystemProperties)) continue;
-                    
+
                     if (genericAvroRecord.TryGetValue(currentFieldName, out object prop))
                     {
-                        eventData.SystemProperties[currentFieldName] = prop;
+                        systemPropertiesCollection[currentFieldName] = prop;
                     }
                 }
+
+                var eventData = new EventData(body)
+                {
+                    SystemProperties = systemPropertiesCollection
+                };
+
+                genericAvroRecord
+                    .GetValue<Dictionary<string, object>>(nameof(EventData.Properties))
+                    .Foreach(eventData.Properties.Add);
 
                 yield return eventData;
             }
